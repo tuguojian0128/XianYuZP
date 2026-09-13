@@ -1,0 +1,421 @@
+import { ref, reactive, computed, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { getAccountList } from '@/api/account'
+import {
+  getGoodsList,
+  refreshGoods,
+  getGoodsDetail,
+  updateGoodsAutomationStatus,
+  deleteItem,
+  changeListingStatus,
+  syncSingleItem,
+  updateGoodsInfo,
+  getSyncProgress,
+  checkSyncing
+} from '@/api/goods'
+import { showSuccess, showError, showInfo, showConfirm } from '@/utils'
+import { getGoodsStatusText, formatPrice, formatTime } from '@/utils'
+import type { Account } from '@/types'
+import type { GoodsItemWithConfig, SyncProgressResponse } from '@/api/goods'
+import type { GoodsEditForm } from './goods-edit'
+import { resolvePlatformItemUrl } from './goods-edit'
+
+export function useGoodsManager() {
+  const router = useRouter()
+  const loading = ref(false)
+  const refreshing = ref(false)
+  const accounts = ref<Account[]>([])
+  const selectedAccountId = ref<number | null>(null)
+  const statusFilter = ref<string>('')
+  const goodsList = ref<GoodsItemWithConfig[]>([])
+  const currentPage = ref(1)
+  const pageSize = ref(20)
+  const total = ref(0)
+
+  const dialogs = reactive({
+    detail: false,
+    edit: false,
+    deleteConfirm: false,
+    filter: false
+  })
+
+  const selectedGoodsId = ref<string>('')
+  const selectedGoods = ref<GoodsItemWithConfig | null>(null)
+  const editingGoods = ref<GoodsItemWithConfig | null>(null)
+  const editSaving = ref(false)
+  const deleteTarget = ref<{ id: string; title: string } | null>(null)
+
+  const syncProgress = ref<SyncProgressResponse | null>(null)
+  const syncing = ref(false)
+  let syncProgressTimer: ReturnType<typeof setInterval> | null = null
+
+  const stopSyncPolling = () => {
+    if (syncProgressTimer) {
+      clearInterval(syncProgressTimer)
+      syncProgressTimer = null
+    }
+  }
+
+  const pollSyncProgress = async (syncId: string) => {
+    try {
+      const response = await getSyncProgress(syncId)
+      if (response.code === 0 || response.code === 200) {
+        if (response.data) {
+          syncProgress.value = response.data
+          if (response.data.isCompleted || !response.data.isRunning) {
+            stopSyncPolling()
+            syncing.value = false
+            refreshing.value = false
+            if (response.data.successCount && response.data.successCount > 0) {
+              showSuccess(`详情同步完成: 成功${response.data.successCount}个, 失败${response.data.failedCount}个`)
+            }
+            await loadGoods()
+          }
+        }
+      }
+    } catch (error) {
+      console.error('获取同步进度失败:', error)
+    }
+  }
+
+  const startSyncPolling = (syncId: string) => {
+    stopSyncPolling()
+    syncing.value = true
+    syncProgressTimer = setInterval(() => {
+      pollSyncProgress(syncId)
+    }, 1000)
+  }
+
+  onUnmounted(() => {
+    stopSyncPolling()
+  })
+
+  // Computed
+  const totalPages = computed(() => Math.ceil(total.value / pageSize.value))
+  const accountName = computed(() => {
+    if (!selectedAccountId.value) return ''
+    const acc = accounts.value.find(a => a.id === selectedAccountId.value)
+    return acc?.accountNote || acc?.unb || ''
+  })
+
+  // 加载账号列表
+  const loadAccounts = async () => {
+    try {
+      const response = await getAccountList()
+      if (response.code === 0 || response.code === 200) {
+        accounts.value = response.data?.accounts || []
+        if (accounts.value.length > 0 && !selectedAccountId.value) {
+          selectedAccountId.value = accounts.value[0]?.id || null
+          await loadGoods()
+        }
+      }
+    } catch (error: any) {
+      console.error('加载账号列表失败:', error)
+    }
+  }
+
+  // 加载商品列表
+  const loadGoods = async () => {
+    if (!selectedAccountId.value) {
+      showInfo('请先选择账号')
+      return
+    }
+
+    loading.value = true
+    try {
+      const params: any = {
+        xianyuAccountId: selectedAccountId.value,
+        pageNum: currentPage.value,
+        pageSize: pageSize.value
+      }
+      if (statusFilter.value !== '') {
+        params.status = parseInt(statusFilter.value)
+      } else {
+        // “全部状态”必须显式请求全部本地记录；后端默认值是只显示在售。
+        params.onlyOnSale = false
+      }
+      const response = await getGoodsList(params)
+      if (response.code === 0 || response.code === 200) {
+        goodsList.value = response.data?.itemsWithConfig || []
+        total.value = response.data?.totalCount || 0
+      }
+    } catch (error: any) {
+      console.error('加载商品列表失败:', error)
+      goodsList.value = []
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // 刷新商品数据
+  const handleRefresh = async () => {
+    if (!selectedAccountId.value) {
+      showInfo('请先选择账号')
+      return
+    }
+    refreshing.value = true
+    try {
+      const response = await refreshGoods(selectedAccountId.value)
+      if (response.code === 0 || response.code === 200) {
+        if (response.data && response.data.success) {
+          showSuccess('商品数据刷新成功')
+          if (response.data.syncId) {
+            startSyncPolling(response.data.syncId)
+          } else {
+            await loadGoods()
+            refreshing.value = false
+          }
+        } else {
+          showError(response.data?.message || '刷新商品数据失败')
+          refreshing.value = false
+        }
+      }
+    } catch (error: any) {
+      console.error('刷新商品数据失败:', error)
+      refreshing.value = false
+    }
+  }
+
+  // 账号变更
+  const handleAccountChange = () => {
+    currentPage.value = 1
+    loadGoods()
+  }
+
+  // 状态筛选
+  const handleStatusFilter = () => {
+    currentPage.value = 1
+    loadGoods()
+  }
+
+  // 分页
+  const handlePageChange = (page: number) => {
+    currentPage.value = page
+    loadGoods()
+  }
+
+  // 查看详情
+  const viewDetail = (xyGoodId: string) => {
+    selectedGoodsId.value = xyGoodId
+    dialogs.detail = true
+  }
+
+  const configureDelivery = (item: GoodsItemWithConfig) => {
+    if (!selectedAccountId.value) return
+    router.push({
+      path: '/auto-delivery',
+      query: {
+        accountId: String(selectedAccountId.value),
+        goodsId: item.item.xyGoodId
+      }
+    })
+  }
+
+  const editGoods = (item: GoodsItemWithConfig) => {
+    editingGoods.value = item
+    dialogs.edit = true
+  }
+
+  const saveGoodsInfo = async (form: GoodsEditForm) => {
+    if (!selectedAccountId.value || !editingGoods.value) return
+    editSaving.value = true
+    try {
+      await updateGoodsInfo({
+        xianyuAccountId: selectedAccountId.value,
+        xyGoodsId: editingGoods.value.item.xyGoodId,
+        ...form
+      })
+      showSuccess('本地商品资料已保存')
+      dialogs.edit = false
+      editingGoods.value = null
+      await loadGoods()
+    } catch (error: any) {
+      if (!error.messageShown) {
+        showError(error.message || '保存本地商品资料失败')
+      }
+    } finally {
+      editSaving.value = false
+    }
+  }
+
+  const openPlatformGoods = () => {
+    if (!editingGoods.value) return
+    const item = editingGoods.value.item
+    const opened = window.open(resolvePlatformItemUrl(item.detailUrl, item.xyGoodId), '_blank')
+    if (opened) {
+      opened.opener = null
+    } else {
+      showError('浏览器阻止了新窗口，请允许弹窗后重试')
+    }
+  }
+
+  const updateAutoPolish = async (item: GoodsItemWithConfig, autoPolish: number) => {
+    if (!selectedAccountId.value) return
+    try {
+      const response = await updateGoodsAutomationStatus({
+        xianyuAccountId: selectedAccountId.value,
+        xyGoodsId: item.item.xyGoodId,
+        xianyuAutoPolishOn: autoPolish
+      })
+      if (response.code !== 0 && response.code !== 200) {
+        throw new Error(response.msg || '操作失败')
+      }
+      item.xianyuAutoPolishOn = autoPolish
+      showSuccess(`自动擦亮${autoPolish === 1 ? '开启' : '关闭'}成功`)
+      return true
+    } catch (error: any) {
+      if (!error.messageShown) showError(error.message || '自动擦亮设置更新失败')
+      return false
+    }
+  }
+
+  const toggleAutoPolish = (item: GoodsItemWithConfig, value: boolean) => {
+    return updateAutoPolish(item, value ? 1 : 0)
+  }
+
+  const saveRateSettings = async (items: GoodsItemWithConfig[], mode: number, content?: string) => {
+    if (!selectedAccountId.value || !items.length) return false
+    const accountId = selectedAccountId.value
+    const goodsIds = [...new Set(items.map(item => item.item.xyGoodId))]
+    try {
+      // 批量接口每次最多提交200个商品，避免大账号请求体过大
+      for (let index = 0; index < goodsIds.length; index += 200) {
+        const response = await updateGoodsAutomationStatus({
+          xianyuAccountId: accountId,
+          xyGoodsIds: goodsIds.slice(index, index + 200),
+          xianyuAutoRateOn: mode,
+          xianyuAutoRateContent: mode === 0 ? undefined : content
+        })
+        if (response.code !== 0 && response.code !== 200) {
+          throw new Error(response.msg || '保存自动评价设置失败')
+        }
+      }
+      const updatedIds = new Set(goodsIds)
+      const visibleGoods = selectedAccountId.value === accountId ? goodsList.value : []
+      ;[...items, ...visibleGoods].forEach(item => {
+        if (!updatedIds.has(item.item.xyGoodId)) return
+        item.xianyuAutoRateOn = mode
+        if (mode !== 0 && content !== undefined) item.xianyuAutoRateContent = content
+      })
+      showSuccess(`已更新 ${goodsIds.length} 个商品的自动评价设置`)
+      return true
+    } catch (error: any) {
+      if (!error.messageShown) showError(error.message || '自动评价设置保存失败')
+      return false
+    }
+  }
+
+  // 删除商品
+  const confirmDelete = (xyGoodId: string, title: string) => {
+    deleteTarget.value = { id: xyGoodId, title }
+    dialogs.deleteConfirm = true
+  }
+
+  const executeDelete = async () => {
+    if (!selectedAccountId.value || !deleteTarget.value) return
+    try {
+      const response = await deleteItem({
+        xianyuAccountId: selectedAccountId.value,
+        xyGoodsId: deleteTarget.value.id
+      })
+      if (response.code === 0 || response.code === 200) {
+        showSuccess('商品删除成功')
+        dialogs.deleteConfirm = false
+        deleteTarget.value = null
+        await loadGoods()
+      } else {
+        throw new Error(response.msg || '删除失败')
+      }
+    } catch (error: any) {
+      // 只有在错误消息未显示过时才弹出提示（避免重复显示）
+      if (!error.messageShown) {
+        showError('删除失败: ' + error.message)
+      }
+    }
+  }
+
+  const syncSingleGoods = async (xyGoodId: string) => {
+    if (!selectedAccountId.value) return
+    try {
+      const response = await syncSingleItem({
+        xianyuAccountId: selectedAccountId.value,
+        xyGoodsId: xyGoodId
+      })
+      if (response.code === 0 || response.code === 200) {
+        showSuccess('同步成功')
+        loadGoods()
+      } else {
+        throw new Error(response.msg || '同步失败')
+      }
+    } catch (error: any) {
+      console.error('同步失败:', error)
+    }
+  }
+
+  const toggleListingStatus = async (item: GoodsItemWithConfig) => {
+    if (!selectedAccountId.value) return
+    const onSale = item.item.status !== 0
+    try {
+      await changeListingStatus({
+        xianyuAccountId: selectedAccountId.value,
+        xyGoodsId: item.item.xyGoodId,
+        onSale
+      })
+      showSuccess(onSale ? '商品已上架' : '商品已下架')
+      await syncSingleGoods(item.item.xyGoodId)
+    } catch (error: any) {
+      if (!error.messageShown) showError(error.message || '修改商品上下架状态失败')
+    }
+  }
+
+  const syncEditingGoods = async () => {
+    if (!editingGoods.value) return
+    const xyGoodsId = editingGoods.value.item.xyGoodId
+    dialogs.edit = false
+    editingGoods.value = null
+    await syncSingleGoods(xyGoodsId)
+  }
+
+  return {
+    loading,
+    refreshing,
+    syncing,
+    syncProgress,
+    accounts,
+    selectedAccountId,
+    statusFilter,
+    goodsList,
+    currentPage,
+    pageSize,
+    total,
+    totalPages,
+    accountName,
+    dialogs,
+    selectedGoodsId,
+    selectedGoods,
+    editingGoods,
+    editSaving,
+    deleteTarget,
+    loadAccounts,
+    loadGoods,
+    handleRefresh,
+    handleAccountChange,
+    handleStatusFilter,
+    handlePageChange,
+    viewDetail,
+    configureDelivery,
+    editGoods,
+    saveGoodsInfo,
+    openPlatformGoods,
+    syncEditingGoods,
+    toggleAutoPolish,
+    saveRateSettings,
+    confirmDelete,
+    executeDelete,
+    getGoodsStatusText,
+    formatPrice,
+    formatTime,
+    syncSingleGoods,
+    toggleListingStatus
+  }
+}
