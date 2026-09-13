@@ -56,5 +56,8 @@ vue-code/dist/
 /scripts/.star-history-cache.json
 /_upload_github_api.py
 /_upload_blobs_cache.json
+/_contents_upload.py
+/_graphql_test.py
+/_graphql_upload.py
 /docs/assets/community/
 /docs/assets/star-history-*.png
