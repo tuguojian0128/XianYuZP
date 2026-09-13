@@ -1,0 +1,60 @@
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+### STS ###
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+
+### IntelliJ IDEA ###
+.idea
+*.iws
+*.iml
+*.ipr
+
+### NetBeans ###
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+### VS Code ###
+.vscode/
+/src/main/resources/pythondemo/xianyu-auto-reply-main/
+
+### Node ###
+node_modules/
+vue-code/dist/
+
+### Database ###
+/dbdata/
+*.db
+*.db-journal
+/logs/
+/.env
+/deploy/nginx/certs/
+/nul
+/vue-code/nul
+/demo/
+/.codeartsdoer/
+/.arts/
+/.worktrees/
+/.qoder/
+/.qoder/
+/.arts/
+/scripts/.star-history-cache.json
+/_upload_github_api.py
+/_upload_blobs_cache.json
+/docs/assets/community/
+/docs/assets/star-history-*.png
